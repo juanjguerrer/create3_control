@@ -67,6 +67,7 @@ class XboxTeleopDockNode(Node):
             return
 
         for hazard in msg.detections:
+            self.get_logger().info(f"Hazard detected: {hazard.type}")
             if hazard.type == HazardDetection.BUMP:
                 self.get_logger().warn("Bumper triggered! Executing avoidance maneuver.")
                 self.last_bumper_time = now
@@ -93,6 +94,11 @@ class XboxTeleopDockNode(Node):
 
                 # Step 4: Stop again
                 self.cmd_vel_pub.publish(Twist())
+                break
+            elif hazard.type == HazardDetection.OBJECT_PROXIMITY:
+                self.get_logger().warn("Object detected nearby! Stopping robot to avoid collision.")
+                self.last_bumper_time = now
+                self.cmd_vel_pub.publish(Twist())  # Stop or modify behavior here
                 break
     def send_dock_goal(self):
         goal_msg = Dock.Goal()

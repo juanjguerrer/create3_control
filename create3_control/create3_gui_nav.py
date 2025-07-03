@@ -7,7 +7,8 @@ import threading
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from irobot_create_msgs.action import Undock, DriveDistance, RotateAngle
 from irobot_create_msgs.action import DockServo as Dock
-from irobot_create_msgs.msg import HazardDetectionVector, HazardDetection
+from irobot_create_msgs.msg import HazardDetectionVector, HazardDetection, LightringLeds, LedColor
+from irobot_create_msgs.srv import EStop
 from rclpy.action import ActionClient
 import queue
 from tkinter import messagebox
@@ -134,6 +135,7 @@ class Create3ManualGUI(Node):
         self.is_backward = False 
         self.is_rotated = False
         self.main_point = ''
+        self.goal_handle = None
         self.battery_sub = self.create_subscription(
             BatteryState,
             '/battery_state',
@@ -142,11 +144,15 @@ class Create3ManualGUI(Node):
         )
         self.create_subscription(HazardDetectionVector, '/hazard_detection', self.hazard_callback, qos_profile_sensor_data)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.light_pub = self.create_publisher(LightringLeds, '/cmd_lightring', 10)
         self.undock_client = ActionClient(self, Undock, '/undock')
         self.dock_client = ActionClient(self, Dock, '/dock')
         self.drive_client = ActionClient(self, DriveDistance, '/drive_distance')
         self.rotate_angle = ActionClient(self, RotateAngle, '/rotate_angle')
-
+        self.cli = self.create_client(EStop, '/e_stop')
+        self.e_stop_service = None
+        self.req = EStop.Request()
+        self.req.e_stop_on = True
         self.last_bumper_time = 0.0
         self.bumper_cooldown = 3.0  # seconds
 
@@ -286,12 +292,12 @@ class Create3ManualGUI(Node):
 
     def dock_goal_response_callback(self, future):
         try:
-            goal_handle = future.result()
-            if not goal_handle.accepted:
+            self.goal_handle = future.result()
+            if not self.goal_handle.accepted:
                 self.get_logger().error("Dock goal rejected 😞")
                 return
             self.get_logger().info("Dock goal accepted 🎯")
-            result_future = goal_handle.get_result_async()
+            result_future = self.goal_handle.get_result_async()
             result_future.add_done_callback(self.dock_result_callback)
         except Exception as e:
             self.get_logger().error(f"Dock goal response error: {e}")
@@ -322,12 +328,12 @@ class Create3ManualGUI(Node):
 
     def undock_goal_response_callback(self, future):
         try:
-            goal_handle = future.result()
-            if not goal_handle.accepted:
+            self.goal_handle = future.result()
+            if not self.goal_handle.accepted:
                 self.get_logger().error("Undock goal rejected ❌")
                 return
             self.get_logger().info("Undock goal accepted 🎯")
-            result_future = goal_handle.get_result_async()
+            result_future = self.goal_handle.get_result_async()
             result_future.add_done_callback(self.undock_result_callback)
         except Exception as e:
             self.get_logger().error(f"Undock goal response error: {e}")
@@ -349,12 +355,12 @@ class Create3ManualGUI(Node):
 
     def drive_goal_response_callback(self, future):
         try:
-            goal_handle = future.result()
-            if not goal_handle.accepted:
+            self.goal_handle = future.result()
+            if not self.goal_handle.accepted:
                 self.get_logger().error("DriveDistance goal rejected ❌")
                 return
             self.get_logger().info("DriveDistance goal accepted 🚗")
-            result_future = goal_handle.get_result_async()
+            result_future = self.goal_handle.get_result_async()
             result_future.add_done_callback(self.drive_result_callback)
         except Exception as e:
             self.get_logger().error(f"Drive goal response error: {e}")
@@ -394,13 +400,13 @@ class Create3ManualGUI(Node):
 
     def drive_to_point_response_callback(self, future):
         try:
-            goal_handle = future.result()
-            if not goal_handle.accepted:
+            self.goal_handle = future.result()
+            if not self.goal_handle.accepted:
                 self.get_logger().error("DriveDistance goal rejected")
                 return
 
             self.get_logger().info("DriveDistance goal accepted")
-            result_future = goal_handle.get_result_async()
+            result_future = self.goal_handle.get_result_async()
             result_future.add_done_callback(self.drive_to_point_result_callback)
 
         except Exception as e:
@@ -563,13 +569,13 @@ class Create3ManualGUI(Node):
     
     def drive_to_point_response_callback(self, future, target_label):
         try:
-            goal_handle = future.result()
-            if not goal_handle.accepted:
+            self.goal_handle = future.result()
+            if not self.goal_handle.accepted:
                 self.get_logger().error("DriveDistance goal rejected")
                 return
 
             self.get_logger().info("DriveDistance goal accepted")
-            result_future = goal_handle.get_result_async()
+            result_future = self.goal_handle.get_result_async()
             result_future.add_done_callback(lambda f: self.drive_to_point_result_callback(f, target_label))
 
         except Exception as e:
@@ -717,7 +723,6 @@ class Create3ManualGUI(Node):
         next_point = self.path[0]
         if ((next_point in dictionary_distances) and
             (self.current_location != 'a1' and self.current_location != 'b1' and self.current_location != 'c1')):
-            print('Main branch')
             distance = dictionary_distances.get(self.path[0], 0) if not self.is_backward else dictionary_distances_backwards.get(self.path[0], 0)
         else:
             point = 'A'
@@ -726,9 +731,9 @@ class Create3ManualGUI(Node):
             elif next_point in order_inside['C']:
                 point = 'C'
             distances = distances_inside[point] if not self.is_backward else distances_inside_backwards[point]
-            print('Inside branch')
-            print(f"Distances: {distances}")
             distance = distances.get(next_point, 0)
+        if next_point == 'Base':
+            distance = DISTANCE_A
         self.send_drive_goal(distance, self.path[0])
 
     def calculate_path_to_ABC(self, target):
@@ -788,20 +793,49 @@ class Create3ManualGUI(Node):
             return
 
         for hazard in msg.detections:
+            print ("Hazard detected:", hazard.type)
             if hazard.type == HazardDetection.BUMP:
                 self.get_logger().warn("Bumper triggered! Executing avoidance maneuver.")
+                self.gui_queue.put(lambda: messagebox.showerror("Colisión detectada", "Error en el robot, se ha parado por colisión."))
                 self.last_bumper_time = now
-
+                msg = LightringLeds()
+                msg.override_system = True
+                red_led = LedColor(red=255, green=0, blue=0)
+                msg.leds = [red_led] * 6
+                self.light_pub.publish(msg)
                 # Step 1: Stop
                 msg = Twist()
                 msg.linear.x = 0.0
                 msg.angular.z = 0.0
+                if self.goal_handle is not None:
+                    cancel_future = self.drive_client._cancel_goal_async(self.goal_handle)
+                    rclpy.spin_until_future_complete(self, cancel_future)
                 self.cmd_pub.publish(msg)
+                # Step 2: Red light on
                 # stop path and everything
                 self.path = []
                 self.is_rotated = False
-                #self.stop_robot()
-
+            if hazard.type == HazardDetection.OBJECT_PROXIMITY:
+                self.get_logger().warn("Object proximity detected! Executing avoidance maneuver.")
+                self.gui_queue.put(lambda: messagebox.showerror("Proximidad de objeto detectada", "Error en el robot, se ha parado por proximidad de objeto."))
+                self.last_bumper_time = now
+                msg = LightringLeds()
+                msg.override_system = True
+                red_led = LedColor(red=255, green=0, blue=0)
+                msg.leds = [red_led] * 6
+                self.light_pub.publish(msg)
+                # Step 1: Stop
+                msg = Twist()
+                msg.linear.x = 0.0
+                msg.angular.z = 0.0
+                if self.goal_handle is not None:
+                    cancel_future = self.drive_client._cancel_goal_async(self.goal_handle)
+                    rclpy.spin_until_future_complete(self, cancel_future)
+                self.cmd_pub.publish(msg)
+                # Step 2: Red light on
+                # stop path and everything
+                self.path = []
+                self.is_rotated = False
 def main(args=None):
     rclpy.init(args=args)
     try:

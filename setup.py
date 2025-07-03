@@ -22,6 +22,7 @@ setup(
         'console_scripts': [
             'create3_control = create3_control.create3_gui_nav:main',
             'xbox_teleop = create3_control.xbox_teleop:main',
+            'page = create3_control.page:main', 
         ],
     },
 )
