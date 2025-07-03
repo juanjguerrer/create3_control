@@ -147,6 +147,9 @@ class Create3ManualGUI(Node):
         self.drive_client = ActionClient(self, DriveDistance, '/drive_distance')
         self.rotate_angle = ActionClient(self, RotateAngle, '/rotate_angle')
 
+        self.last_bumper_time = 0.0
+        self.bumper_cooldown = 3.0  # seconds
+
         # GUI setup
         self.window = tk.Tk()
         self.window.title("Create 3 Manual Controller")
@@ -224,7 +227,8 @@ class Create3ManualGUI(Node):
         imageCv2 = cv2.circle(imageCv2, (204, 405), 5, (0, 128, 255), -1)  # Point c3
         imageCv2 = cv2.circle(imageCv2, (175, 405), 5, (128, 255, 0), -1)  # Point c4
         imageCv2 = cv2.circle(imageCv2, (146, 405), 5, (255, 128, 128), -1)  # Point c5
-
+        #imageCv2 = cv2.resize(imageCv2, (500, 800), interpolation=cv2.INTER_AREA)
+        #imageCv2 = cv2.rotate(imageCv2, -90)  # Rotate the image to match the layout
         # Show text on the image
         cv2.putText(imageCv2, 'Docked', (220, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         cv2.putText(imageCv2, 'Base', (220, 147), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
@@ -271,7 +275,7 @@ class Create3ManualGUI(Node):
         self.window.after(100, self.process_gui_queue)
 
     def dock(self):
-        if not self.dock_client.wait_for_server(timeout_sec=1.0):
+        if not self.dock_client.wait_for_server(timeout_sec=2.0):
             self.get_logger().error("Dock server not available")
             return
 
@@ -459,7 +463,8 @@ class Create3ManualGUI(Node):
         if not self.drive_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().error("DriveDistance server not available")
             return
-
+        #show angle and 
+        print(self.rotation)
         # if next point is c, rotate 90 degrees the robot
         # positive is clockwise
         if self.rotation == 180:
@@ -527,19 +532,27 @@ class Create3ManualGUI(Node):
             self.next_angle = -90
             future = self.rotate_angle.send_goal_async(goal)
             future.add_done_callback(self.rotate_callback)
-        elif target_label == 'A' and self.is_backward and self.rotation == -90:
+        elif target_label == 'A' and self.is_backward and self.rotation == -90 and self.current_location == 'B':
             self.get_logger().info("Rotating from B")
             goal = RotateAngle.Goal()
             goal.angle = -1.57
             self.next_angle = 0
             future = self.rotate_angle.send_goal_async(goal)
             future.add_done_callback(self.rotate_callback)
-        elif target_label == 'Base' and self.is_backward and self.rotation != 0 and self.current_location == 'A':
-            self.get_logger().info("Rotating from B")
+        elif target_label == 'A' and self.is_backward and self.rotation == 180 and self.current_location == 'B':
+            self.get_logger().info('Rotating from B')
             goal = RotateAngle.Goal()
             goal.angle = 1.57
             self.next_angle = 0
             future = self.rotate_angle.send_goal_async(goal)
+            future.add_done_callback(self.rotate_callback)
+        elif target_label == 'Base' and self.is_backward and self.rotation != 0 and self.current_location == 'A':
+            self.get_logger().info("Rotating from A")
+            goal = RotateAngle.Goal()
+            goal.angle = 1.57
+            self.next_angle = 0
+            future = self.rotate_angle.send_goal_async(goal)
+            future.add_done_callback(self.rotate_callback)
         else: 
             self.get_logger().info(f"Driving {distance:.2f} m to {target_label}")
             goal = DriveDistance.Goal()
@@ -582,9 +595,6 @@ class Create3ManualGUI(Node):
                         elif self.path[0] in order_inside['C'] or self.path[0] == 'C':
                             point = 'C'
                         distances = distances_inside[point] if not self.is_backward else distances_inside_backwards[point]
-                        print(f"Distances: {distances}")
-                        print(f"Path: {self.path}")
-                        print(f"Next point: {self.path[0]}")
                         distance = distances.get(self.path[0], 0)
                     self.send_drive_goal(distance, self.path[0])
                 elif self.is_rotated:
@@ -622,6 +632,8 @@ class Create3ManualGUI(Node):
             if ((next_point in dictionary_distances) and
                 (self.current_location != 'a1' and self.current_location != 'b1' and self.current_location != 'c1')):
                 distance = dictionary_distances.get(self.path[0], 0) if not self.is_backward else dictionary_distances_backwards.get(self.path[0], 0)
+            elif next_point == 'Base':
+                distance = DISTANCE_A
             else:
                 point = 'A'
                 if next_point in order_inside['B'] or next_point == 'B':
@@ -781,7 +793,14 @@ class Create3ManualGUI(Node):
                 self.last_bumper_time = now
 
                 # Step 1: Stop
-                self.cmd_pub.publish(Twist())
+                msg = Twist()
+                msg.linear.x = 0.0
+                msg.angular.z = 0.0
+                self.cmd_pub.publish(msg)
+                # stop path and everything
+                self.path = []
+                self.is_rotated = False
+                #self.stop_robot()
 
 def main(args=None):
     rclpy.init(args=args)

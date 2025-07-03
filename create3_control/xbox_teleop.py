@@ -5,7 +5,8 @@ from rclpy.action import ActionClient
 
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Joy
-from irobot_create_msgs.action import Dock, Undock
+from irobot_create_msgs.action import Undock
+from irobot_create_msgs.action import DockServo as Dock
 from irobot_create_msgs.msg import HazardDetectionVector, HazardDetection
 
 import time
